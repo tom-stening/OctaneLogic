@@ -1,0 +1,61 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    container_name: octanelogic_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: octane
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-octane}
+      POSTGRES_DB: octanelogic
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./sql/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U octane -d octanelogic"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: octanelogic_redis
+    restart: unless-stopped
+    command: redis-server --save 60 1 --loglevel warning
+    volumes:
+      - redisdata:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: octanelogic_api
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+asyncpg://octane:${POSTGRES_PASSWORD:-octane}@db:5432/octanelogic
+      REDIS_URL: redis://redis:6379/0
+      FUELCHECK_API_KEY: ${FUELCHECK_API_KEY:-}
+      OCM_API_KEY: ${OCM_API_KEY:-}
+      NEM_REGION: ${NEM_REGION:-NSW1}
+      DB_ENCRYPTION_KEY: ${DB_ENCRYPTION_KEY:-changeme-32-byte-encryption-key!}
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  redisdata:
