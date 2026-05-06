@@ -1,0 +1,51 @@
+name: Triage Emails
+
+on:
+  schedule:
+    # Run every hour to catch new failure emails promptly
+    - cron: "0 * * * *"
+  push:
+    paths:
+      - "emails/git_issues/unresolved/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run email triage
+        id: triage
+        run: |
+          python scripts/triage_emails.py 2>&1 | tee /tmp/triage-output.txt
+          echo "output<<EOF" >> "$GITHUB_OUTPUT"
+          cat /tmp/triage-output.txt >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Check for changes
+        id: git_status
+        run: |
+          git diff --quiet && echo "changed=false" >> "$GITHUB_OUTPUT" \
+            || echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Commit and push triage results
+        if: steps.git_status.outputs.changed == 'true'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/KNOWN_ISSUES.md \
+                  emails/git_issues/in_progress/ \
+                  emails/git_issues/unresolved/
+          git commit -m "chore(triage): process email triage [skip ci]"
+          git push
