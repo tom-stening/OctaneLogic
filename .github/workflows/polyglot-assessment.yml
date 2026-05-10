@@ -1,0 +1,109 @@
+name: Quarterly Polyglot Language Assessment
+
+# Runs on the 1st of January, April, July, and October at 09:00 UTC.
+# Also triggerable manually via workflow_dispatch for ad-hoc assessments.
+#
+# What it does:
+#   1. Checks out the repository.
+#   2. Runs scripts/polyglot_assess.py to profile the codebase.
+#   3. Posts the Markdown output as a new GitHub issue for human review.
+#   4. Echoes the report to the Actions step summary.
+#
+# Seeding this in other repositories
+# ------------------------------------
+# This workflow and scripts/polyglot_assess.py are self-contained.
+# To enable the same recurring assessment in another repository:
+#   1. Copy .github/workflows/polyglot-assessment.yml → target repo.
+#   2. Copy scripts/polyglot_assess.py → target repo.
+#   3. Adjust CANDIDATES and REPO_ROOT_GLOBS in polyglot_assess.py
+#      if the project layout or language mix differs.
+#   4. Push — the first run fires on the next quarterly trigger date.
+
+on:
+  schedule:
+    # 09:00 UTC on 1 Jan, 1 Apr, 1 Jul, 1 Oct
+    - cron: "0 9 1 1,4,7,10 *"
+  workflow_dispatch:
+    inputs:
+      format:
+        description: "Output format"
+        required: false
+        default: "markdown"
+        type: choice
+        options: ["markdown", "json"]
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  assess:
+    name: Run polyglot assessment
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run assessment
+        id: run_assess
+        run: |
+          FORMAT="${{ github.event.inputs.format || 'markdown' }}"
+          if [ "$FORMAT" = "json" ]; then
+            python scripts/polyglot_assess.py --json --out assessment.md
+          else
+            python scripts/polyglot_assess.py --out assessment.md
+          fi
+          echo "Report saved to assessment.md"
+          wc -l assessment.md
+
+      - name: Write to Actions step summary
+        run: cat assessment.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Derive quarter label
+        id: quarter
+        run: |
+          MONTH=$(date +%-m)
+          YEAR=$(date +%Y)
+          if   [ "$MONTH" -le 3  ]; then Q="Q1"
+          elif [ "$MONTH" -le 6  ]; then Q="Q2"
+          elif [ "$MONTH" -le 9  ]; then Q="Q3"
+          else                            Q="Q4"
+          fi
+          echo "label=${Q} ${YEAR}" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          QUARTER="${{ steps.quarter.outputs.label }}"
+          TITLE="Polyglot Assessment: ${QUARTER}"
+          BODY=$(cat assessment.md)
+
+          # Check whether an issue for this quarter already exists
+          EXISTING=$(gh issue list \
+            --state open \
+            --label "polyglot-assessment" \
+            --search "${TITLE}" \
+            --json number \
+            --jq '.[0].number // empty')
+
+          if [ -n "$EXISTING" ]; then
+            echo "Issue #${EXISTING} already exists for ${QUARTER}; adding a comment."
+            gh issue comment "$EXISTING" --body "$BODY"
+          else
+            # Create the issue; ignore label-not-found errors gracefully
+            gh issue create \
+              --title "$TITLE" \
+              --body "$BODY" \
+              --label "polyglot-assessment" \
+              2>/dev/null || \
+            gh issue create \
+              --title "$TITLE" \
+              --body "$BODY"
+          fi
